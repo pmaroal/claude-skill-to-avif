@@ -1,0 +1,15 @@
+{
+  "name": "img-to-avif",
+  "version": "1.0.0",
+  "description": "Conversor de JPG/PNG a AVIF con control de peso (~150KB)",
+  "main": "convert.js",
+  "scripts": {
+    "start": "node convert.js",
+    "convert": "node convert.js"
+  },
+  "dependencies": {
+    "sharp": "^0.33.0",
+    "chalk": "^4.1.2",
+    "cli-progress": "^3.12.0"
+  }
+}
