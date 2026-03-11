@@ -183,6 +183,8 @@ async function main() {
     try {
       const result = await convertImage(inputPath);
       results.push(result);
+      fs.unlinkSync(inputPath);
+      log.dim(`  Eliminado: ${file}`);
     } catch (err) {
       log.error(`Error procesando "${file}": ${err.message}`);
       errors++;
