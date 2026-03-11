@@ -3,11 +3,10 @@
 const sharp = require('sharp');
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 
 // ─── CONFIGURACIÓN ──────────────────────────────────────────────────────────
 const CONFIG = {
-  INPUT_DIR: path.join(__dirname, 'input'),
-  OUTPUT_DIR: path.join(__dirname, 'output'),
   TARGET_KB: 150,      // Peso objetivo en KB
   MIN_KB: 120,         // Mínimo aceptable en KB
   MAX_KB: 200,         // Máximo aceptable en KB
@@ -15,6 +14,31 @@ const CONFIG = {
   QUALITY_MAX: 90,     // Calidad máxima AVIF (1-100)
   MAX_ITERATIONS: 15,  // Iteraciones máximas de búsqueda binaria
 };
+
+// ─── SELECTOR DE CARPETA (macOS Finder) ─────────────────────────────────────
+function pickFolder() {
+  const scriptFile = path.join(require('os').tmpdir(), `pick-folder-${Date.now()}.scpt`);
+  const script = [
+    'tell application "System Events"',
+    '  activate',
+    '  set theFolder to choose folder with prompt "Selecciona la carpeta con las imágenes a convertir"',
+    '  return POSIX path of theFolder',
+    'end tell',
+  ].join('\n');
+
+  try {
+    fs.writeFileSync(scriptFile, script, 'utf-8');
+    const result = execSync(`osascript "${scriptFile}" 2>&1`, {
+      encoding: 'utf-8',
+      timeout: 120000,
+    });
+    return result.trim();
+  } catch {
+    return null;
+  } finally {
+    try { fs.unlinkSync(scriptFile); } catch {}
+  }
+}
 
 // ─── UTILIDADES ─────────────────────────────────────────────────────────────
 const KB = 1024;
@@ -103,10 +127,10 @@ async function findOptimalQuality(inputBuffer, metadata) {
 }
 
 // ─── CONVERSIÓN DE UNA IMAGEN ─────────────────────────────────────────────
-async function convertImage(inputPath) {
+async function convertImage(inputPath, outputDir) {
   const filename  = path.basename(inputPath);
   const nameNoExt = path.basename(inputPath, path.extname(inputPath));
-  const outputPath = path.join(CONFIG.OUTPUT_DIR, `${nameNoExt}.avif`);
+  const outputPath = path.join(outputDir, `${nameNoExt}.avif`);
 
   const inputBuffer = fs.readFileSync(inputPath);
   const inputSize   = inputBuffer.length;
@@ -154,37 +178,49 @@ async function main() {
   console.log(`\n  Objetivo: ${colors.bright}${CONFIG.TARGET_KB} KB${colors.reset}  ` +
               `(rango ${CONFIG.MIN_KB}–${CONFIG.MAX_KB} KB)\n`);
 
-  // Asegurar carpetas
-  [CONFIG.INPUT_DIR, CONFIG.OUTPUT_DIR].forEach((dir) => {
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  });
+  // Seleccionar carpeta con Finder
+  log.info('Abriendo selector de carpeta…');
+  const selectedDir = pickFolder();
+
+  if (!selectedDir) {
+    log.warn('No se seleccionó ninguna carpeta. Saliendo.');
+    return;
+  }
+
+  if (!fs.existsSync(selectedDir) || !fs.statSync(selectedDir).isDirectory()) {
+    log.error(`La ruta seleccionada no es una carpeta válida: ${selectedDir}`);
+    return;
+  }
+
+  log.success(`Carpeta seleccionada: ${colors.bright}${selectedDir}${colors.reset}`);
 
   // Buscar imágenes
   const supported = ['.jpg', '.jpeg', '.png', '.webp', '.tiff', '.bmp'];
-  const files = fs.readdirSync(CONFIG.INPUT_DIR).filter((f) =>
+  const files = fs.readdirSync(selectedDir).filter((f) =>
     supported.includes(path.extname(f).toLowerCase())
   );
 
   if (files.length === 0) {
-    log.warn(`No se encontraron imágenes en ${colors.bright}input/${colors.reset}`);
+    log.warn(`No se encontraron imágenes en ${colors.bright}${selectedDir}${colors.reset}`);
     console.log(`\n  Formatos soportados: ${supported.join(', ')}`);
-    console.log(`  Copia tus imágenes a la carpeta ${colors.bright}input/${colors.reset} y vuelve a ejecutar.\n`);
+    console.log(`  Asegúrate de que la carpeta contiene imágenes y vuelve a ejecutar.\n`);
     return;
   }
 
-  log.info(`${files.length} imagen(es) encontrada(s) en input/\n`);
+  log.info(`${files.length} imagen(es) encontrada(s)\n`);
   log.divider();
 
   const results = [];
   let errors = 0;
 
   for (const file of files) {
-    const inputPath = path.join(CONFIG.INPUT_DIR, file);
+    const inputPath = path.join(selectedDir, file);
     try {
-      const result = await convertImage(inputPath);
+      const result = await convertImage(inputPath, selectedDir);
       results.push(result);
+      // Eliminar la imagen original
       fs.unlinkSync(inputPath);
-      log.dim(`  Eliminado: ${file}`);
+      log.dim(`  Eliminado original: ${file}`);
     } catch (err) {
       log.error(`Error procesando "${file}": ${err.message}`);
       errors++;
@@ -211,7 +247,7 @@ async function main() {
     log.warn('Algunas imágenes quedaron fuera del rango. Puede ajustar MIN_KB/MAX_KB/TARGET_KB en el archivo convert.js\n');
   }
 
-  console.log(`  Archivos guardados en: ${colors.bright}output/${colors.reset}\n`);
+  console.log(`  Archivos guardados en: ${colors.bright}${selectedDir}${colors.reset}\n`);
 }
 
 main().catch((err) => {
