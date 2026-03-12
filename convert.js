@@ -248,6 +248,11 @@ async function main() {
   }
 
   console.log(`  Archivos guardados en: ${colors.bright}${selectedDir}${colors.reset}\n`);
+
+  // Abrir la carpeta en Finder al finalizar
+  try {
+    execSync(`open "${selectedDir}"`);
+  } catch {}
 }
 
 main().catch((err) => {
