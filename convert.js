@@ -128,13 +128,34 @@ async function findOptimalQuality(inputBuffer, metadata) {
 
 // ─── CONVERSIÓN DE UNA IMAGEN ─────────────────────────────────────────────
 async function convertImage(inputPath, outputDir) {
-  const filename  = path.basename(inputPath);
-  const nameNoExt = path.basename(inputPath, path.extname(inputPath));
+  const filename   = path.basename(inputPath);
+  const ext        = path.extname(inputPath).toLowerCase();
+  const nameNoExt  = path.basename(inputPath, path.extname(inputPath));
   const outputPath = path.join(outputDir, `${nameNoExt}.avif`);
+  const isAvif     = ext === '.avif';
 
   const inputBuffer = fs.readFileSync(inputPath);
   const inputSize   = inputBuffer.length;
   const metadata    = await sharp(inputBuffer).metadata();
+
+  // AVIF ya en rango → skip
+  if (isAvif && inputSize >= CONFIG.MIN_KB * KB && inputSize <= CONFIG.MAX_KB * KB) {
+    log.success(
+      `${colors.bright}${filename}${colors.reset}  ` +
+      `${fmt(inputSize)}  ${colors.green}[✓ ya en rango, omitido]${colors.reset}`
+    );
+    return {
+      input: filename,
+      output: filename,
+      inputSize,
+      outputSize: inputSize,
+      quality: null,
+      inRange: true,
+      skipped: true,
+      width: metadata.width,
+      height: metadata.height,
+    };
+  }
 
   log.info(`Procesando: ${colors.bright}${filename}${colors.reset}`);
   log.dim(`  Original: ${fmt(inputSize)} — ${metadata.width}×${metadata.height}px (${metadata.format})`);
@@ -164,6 +185,7 @@ async function convertImage(inputPath, outputDir) {
     outputSize,
     quality,
     inRange,
+    skipped: false,
     width: metadata.width,
     height: metadata.height,
   };
@@ -195,7 +217,7 @@ async function main() {
   log.success(`Carpeta seleccionada: ${colors.bright}${selectedDir}${colors.reset}`);
 
   // Buscar imágenes
-  const supported = ['.jpg', '.jpeg', '.png', '.webp', '.tiff', '.bmp'];
+  const supported = ['.jpg', '.jpeg', '.png', '.webp', '.tiff', '.bmp', '.avif'];
   const files = fs.readdirSync(selectedDir).filter((f) =>
     supported.includes(path.extname(f).toLowerCase())
   );
@@ -218,9 +240,11 @@ async function main() {
     try {
       const result = await convertImage(inputPath, selectedDir);
       results.push(result);
-      // Eliminar la imagen original
-      fs.unlinkSync(inputPath);
-      log.dim(`  Eliminado original: ${file}`);
+      // Eliminar original solo si no era ya un AVIF (para AVIF se sobreescribe en sitio)
+      if (!result.skipped && path.extname(file).toLowerCase() !== '.avif') {
+        fs.unlinkSync(inputPath);
+        log.dim(`  Eliminado original: ${file}`);
+      }
     } catch (err) {
       log.error(`Error procesando "${file}": ${err.message}`);
       errors++;
@@ -231,13 +255,18 @@ async function main() {
   // ─── RESUMEN ──────────────────────────────────────────────────────────────
   if (results.length === 0) return;
 
-  const totalIn    = results.reduce((s, r) => s + r.inputSize, 0);
-  const totalOut   = results.reduce((s, r) => s + r.outputSize, 0);
+  const processed  = results.filter((r) => !r.skipped);
+  const skipped    = results.filter((r) => r.skipped);
+  const totalIn    = processed.reduce((s, r) => s + r.inputSize, 0);
+  const totalOut   = processed.reduce((s, r) => s + r.outputSize, 0);
   const inRange    = results.filter((r) => r.inRange).length;
-  const reduction  = ((totalIn - totalOut) / totalIn) * 100;
+  const reduction  = totalIn > 0 ? ((totalIn - totalOut) / totalIn) * 100 : 0;
 
   log.title('RESUMEN');
   console.log(`  Imágenes procesadas : ${results.length}  (errores: ${errors})`);
+  if (skipped.length > 0) {
+    console.log(`  AVIF ya en rango    : ${colors.cyan}${skipped.length}${colors.reset} (omitidas)`);
+  }
   console.log(`  Dentro del rango    : ${colors.green}${inRange}${colors.reset} / ${results.length}`);
   console.log(`  Peso total entrada  : ${fmt(totalIn)}`);
   console.log(`  Peso total salida   : ${colors.bright}${fmt(totalOut)}${colors.reset}`);
