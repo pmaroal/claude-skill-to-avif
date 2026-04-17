@@ -67,6 +67,29 @@ const log = {
   divider: ()    => console.log(`${colors.gray}${'─'.repeat(60)}${colors.reset}`),
 };
 
+// ─── DECODIFICACIÓN CON FALLBACK (sips para AVIFs con codec no soportado) ───
+async function getDecodableBuffer(inputPath) {
+  const inputBuffer = fs.readFileSync(inputPath);
+  const ext = path.extname(inputPath).toLowerCase();
+  if (ext !== '.avif') return inputBuffer;
+
+  // Verificar que sharp puede decodificar los píxeles (no solo el header)
+  try {
+    await sharp(inputBuffer).raw().toBuffer();
+    return inputBuffer;
+  } catch {
+    // Fallback: sips convierte AVIF → PNG temporal
+    const tmpPath = path.join(require('os').tmpdir(), `avif-fallback-${Date.now()}.png`);
+    try {
+      execSync(`sips -s format png "${inputPath}" --out "${tmpPath}" 2>/dev/null`, { timeout: 30000 });
+      const pngBuffer = fs.readFileSync(tmpPath);
+      return pngBuffer;
+    } finally {
+      try { fs.unlinkSync(tmpPath); } catch {}
+    }
+  }
+}
+
 // ─── BÚSQUEDA BINARIA DE CALIDAD ─────────────────────────────────────────────
 async function findOptimalQuality(inputBuffer, metadata) {
   const targetBytes = CONFIG.TARGET_KB * KB;
@@ -134,15 +157,18 @@ async function convertImage(inputPath, outputDir) {
   const outputPath = path.join(outputDir, `${nameNoExt}.avif`);
   const isAvif     = ext === '.avif';
 
-  const inputBuffer = fs.readFileSync(inputPath);
-  const inputSize   = inputBuffer.length;
-  const metadata    = await sharp(inputBuffer).metadata();
+  const rawBuffer   = fs.readFileSync(inputPath);
+  const inputSize   = rawBuffer.length;
+  const metadata    = await sharp(rawBuffer).metadata();
 
-  // AVIF ya en rango → skip
-  if (isAvif && inputSize >= CONFIG.MIN_KB * KB && inputSize <= CONFIG.MAX_KB * KB) {
+  // AVIF en rango o por debajo del mínimo → skip (no aumentar peso)
+  if (isAvif && inputSize <= CONFIG.MAX_KB * KB) {
+    const tag = inputSize < CONFIG.MIN_KB * KB
+      ? `${colors.cyan}[< mínimo, omitido]${colors.reset}`
+      : `${colors.green}[✓ ya en rango, omitido]${colors.reset}`;
     log.success(
       `${colors.bright}${filename}${colors.reset}  ` +
-      `${fmt(inputSize)}  ${colors.green}[✓ ya en rango, omitido]${colors.reset}`
+      `${fmt(inputSize)}  ${tag}`
     );
     return {
       input: filename,
@@ -159,6 +185,11 @@ async function convertImage(inputPath, outputDir) {
 
   log.info(`Procesando: ${colors.bright}${filename}${colors.reset}`);
   log.dim(`  Original: ${fmt(inputSize)} — ${metadata.width}×${metadata.height}px (${metadata.format})`);
+
+  const inputBuffer = await getDecodableBuffer(inputPath);
+  if (inputBuffer !== rawBuffer) {
+    log.dim(`  (fallback sips: AVIF codec no soportado por sharp, decodificado vía sips)`);
+  }
 
   const { buffer: avifBuffer, quality } = await findOptimalQuality(inputBuffer, metadata);
 
